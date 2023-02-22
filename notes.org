@@ -1,0 +1,156 @@
+* GPU Computing - Exam Preparation
+
+** Basics
+*** Types of Parallelism
+- Instruction-Level Parallelism
+- Thread-Level Parallelism
+- Data-Level Parallelism
+***  BSP Model
+- Parallel Slackness
+  - Programs written for v virtual parallel processors
+  - run on p physical processors
+  - v >> p (e.g. v = p log p ???)
+**** The Model
+The BSP Model is defined as the combination of three attributes:
+- Components (processing and/or memory functions)
+- A Router (message delivery between paris of components)
+- Synchronization Facilities
+  - Sync at regular intervals of L time units (L is called periodicity parameter)
+  - Computation is divied into supersteps
+- Superstep:
+  - Allocate task for each component
+    - Task = combination of computation steps and communication
+  - After L timesteps: Check if each component finished its task
+    - Finished: Move on to next superstep
+    - Unfinished: Allocate another L time units to finish the step
+**** What Does it Mean?
+** Algorithms
+*** Matrix Multiplication
+- GPU Naive Algorithm
+#+begin_src C
+  __global__ void matrixMultNaive(float* Md, float* Nd, float* Pd, int Width)
+  {
+      float PValue = 0; // intermediate result
+      float Melement, Nelement;
+
+      for(int k = 0; k < Width; ++k) {
+          Melement = Md[threadIdx.y * Width + k];
+          Nelement = Nd[k * Width + threadIdx.x];
+          Pvalue += Melement * Nelement;
+      }
+      Pd[threadIdx.y * Width + threadIdx.x] = Pvalue;
+  }
+#+end_src
+*Analysis*
+Per loop this performs 2 FLOPS and 4 memory accesses.
+-> memory = 4N^3, computational load = 2*N^3
+-> I = 1/2 (computational intensity)
+-> FLOPS/Byte = 1/8
+Single block computes entire Matrix
+-> Matrix size limited by threads/block
+- Using Multiple Thread Blocks
+#+begin_src C
+  __global__ void matrixMultTiled(float* Md, float* Nd, float* Pd, int Width)
+  {
+      float PValue = 0; // intermediate result
+      float Melement, Nelement;
+
+      int row = blockIdx.y * blockDim.y + threadIdx.y;
+      int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+      for(int k = 0; k < Width; ++k) {
+          Melement = Md[row * Width + k];
+          Nelement = Nd[k * Width + col];
+          Pvalue += Melement * Nelement;
+      }
+      Pd[row * Width + col] = Pvalue;
+  }
+#+end_src
+*Analysis*
+Each thread uses global memory, 2 32bit accesses per SP Multiply-Add -> 4B per FLOP
+=> 13 TFLOPs need 52 TB/s memory bandwidth (RTX 2080Ti has 616 GB/s)
+=> Performance limited to ~150 GFLOPs/sec
+- Shared Memory Optimizations
+  - TxT tile uses each element T times
+  - Calculate only parts of the elements of C to group close elements together
+  - Each Tile loads one element from the original matrix into shared memory
+  - Then each thread does one partial vector product:
+    - rows[ty][tileWidth*tx:tileWidth*(tx+1)] * cols[tx][tileWidth*ty:tileWidth*(ty+1)]
+  - Two synchronization points required, one after loading into shared, one after the computation
+#+begin_src C
+  __global__ void matrixMultShared(float* Md, float* Nd, float* Pd, int Width)
+  {
+      __shared__ float Mds[TILEWIDTH] [TILEWIDTH];
+      __shared__ float Nds[TILEWIDTH] [TILEWIDTH];
+
+      float PValue = 0; // intermediate result
+      float Melement, Nelement;
+
+      int tx = threadIdx.x;
+      int ty = threadIdx.y;
+      int bx = blockIdx.x;
+      int by = blockIdx.y;
+
+      int row = by * TILEWIDTH + ty;
+      int col = bx * TILEWIDTH + tx;
+
+      for(int m = 0; m < Width / TILEWIDTH; ++m) {
+          Mds[ty][tx] = Md[row * Width + (m * TILEWIDTH + tx)]
+          Nds[ty][tx] = Nd[(m * TILEWIDTH + ty) * WIDTH + col]
+          __syncthreads();
+
+          for(int k = 0; k < TILEWIDTH; ++k) {
+              Pvalue += Mds[ty][k] * Nds[k][tx]
+          }
+          __syncthreads();
+      }
+      Pd[row * Width + col] = Pvalue;
+  }
+#+end_src
+- Further Optimizations
+  - Multiple Output values per Thread
+  - Bank conflicts (possibly detectable using nvprof)
+  - Vectorization using float2/float4
+  - Double buffering
+    - Loading next set of shared memory into one buffer while data from other buffer is still in use
+    - Twice the required shared memory
+    - Hides Latency very effectively
+
+** Performance and Evaluation
+
+*** Roofline Model
+*Model Parameters*
+- Bandwidth of the System b_s (Bytes/sec) 
+  - Theoretical limit of the hardware
+  - Machine parameter
+- Computational Intensity I (Flops/Byte)
+  - How much work is done per byte of data.
+  - Code characteristic
+
+- Attainable Flops/sec
+  - Execution of work p_peak (Flops/sec)
+    - Machine parameter
+  - Data Path I * b_s (Flops/Byte x Bytes/sec)
+
+*Roofline*
+- Measure I against P = min(p_peak, I*b_s)
+  - Creates "Roofline"-Shape
+  - I*b_s is linearly increasing over I
+  - p_peak is constant over I -> horizontal line
+
+*Assumptions + Consequences*
+- Optimistic Model ("light speed")
+  - Always gives upper bound
+- Data transfer and core execution overlap perfectly
+- Latency effects are ignored
+- Knee Point: Intersection of p_peak with I*b_s
+  - I before knee-point: Memory-bound program
+    - Harder to optimize:
+    - Loop Restructuring to improve memory access patterns
+    - Memory Affinity (stuff like NUMA regions.... I think?)
+    - Software Prefetching
+  - I after knee-point: Compute-bound
+    - Easier to Optimize
+    - Loop Unrolling
+    - SIMD
+      
