@@ -3,8 +3,76 @@
 ** Basics
 *** Types of Parallelism
 - Instruction-Level Parallelism
-- Thread-Level Parallelism
-- Data-Level Parallelism
+  - One instruction stream
+  - A lot of dependencies and branches
+  - Very Limited
+- Thread Level Parallelism
+  - Multiple independent instruction streams
+  - No branching for parallelism
+  - Limited by max. executable I-streams
+- Data Level Parallelism
+  - One Operation - Multiple independent elements
+  - Parallelism dependent on data structure
+  - e.g. Vectorization
+- Request Level Parallelism
+  - Datacenters
+  - Many requests from many users
+***  Data Access
+- Data Locality
+  - Let threads operate on data that is close in memory
+  - Leads to more efficient caching -> higher bandwidth
+
+- Non-Uniform Memory Access (NUMA)
+  - Memory divided into seperate regions
+  - Threads are assigned to one region each
+  - Accesses inside the proper region are very fast
+
+*** Communication
+- Plain load/store (LD/ST) - shared mem systems
+  - Threads just store and load from shared mem directly
+  - No communication
+  - Good for SMP, bad for NUMA
+- Message passing (SP)
+  - send(X, 1, tag), recv(Y, 0, tag) - Communication through send/rec functions
+  - p2p and collective functions
+  - overhead: copying, matching, progress, ordering
+- Other models
+  - Active messages - control latency on software level
+  - One-sided communication (put/get) - never say receive
+*** Algorithm Design
+**** Foster's PCAM
+- Partitioning
+  - Ignore technical task
+  - Divide problem into subproblems
+    - Domain Decomposition (divide the data, e.g. for structures like trees or arrays)
+    - Functional Decomposition (divide different kinds of tasks, e.g. different climate computing models (atmosphere, water, etc.)
+    - Pipeline Decomposition (Divide into tasks that are dependent of each other, e.g. CPU instruction pipelining)
+- Communication
+  - Concurrent execution of partitions, not completely independent
+  - Data dependencies -> communication
+    - Local/Global (communication within partition vs between partitions)
+    - Structured/Unstructured (structure of communicated data is static vs changes over time)
+    - Static/Dynamic (Always the same communication vs ...not?)
+    - Synchronous vs Asynchronous (wait for requested data (sleep) vs carry on execution after requesting data)
+- Agglomeration
+  - Increase Granularity
+    - Abstract to Concrete (?)
+    - Number of tasks T >= number of processors P (parallel slackness)
+  - Reduce Communication Costs
+    - e.g. data replication
+  - Depending on use case:
+    - BSP: order of magnitude more Ts than Ps
+    - HPC: T = P
+    - SIMD: T = 1
+- Mapping
+  - Assignment: task <-> processor & memory
+    - Distribute tasks over processors
+    - Execute independent task concurrently
+    - Task Locality (place tasks that communicate often on the same processor)
+  - Not required for:
+    - Uni-processors or shared mem systems with auto mapping
+    - When scheduling is implemented by the OS or the hardware
+  - Mapping is NP-Complete
 ***  BSP Model
 - Parallel Slackness
   - Programs written for v virtual parallel processors
@@ -80,8 +148,11 @@ Each thread uses global memory, 2 32bit accesses per SP Multiply-Add -> 4B per F
 #+begin_src C
   __global__ void matrixMultShared(float* Md, float* Nd, float* Pd, int Width)
   {
-      __shared__ float Mds[TILEWIDTH] [TILEWIDTH];
-      __shared__ float Nds[TILEWIDTH] [TILEWIDTH];
+      // SIZE = 2 * TILEWIDTH*TILEWIDTH
+      __shared__ float sh_mem[];
+
+      float* Mds = sh_mem;
+      float* Nds = (float*) &sh_mem[TILEWIDTH*TILEWIDTH];
 
       float PValue = 0; // intermediate result
       float Melement, Nelement;
